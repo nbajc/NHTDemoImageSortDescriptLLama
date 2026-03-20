@@ -1,0 +1,26 @@
+###################################################################
+# NEXUS HESTIA IMAGE SORTER - START & STOP INSTRUCTIONS
+###################################################################
+
+HOW TO START THE NEXUS ENGINE:
+
+1. Open a new PowerShell terminal.
+2. Navigate to the core workspace:
+   cd 'C:\Users\natas\.gemini\antigravity\scratch\LlamaImageSorter'
+3. Start the Backend API (Python):
+   python app.py
+4. Open a SEPARATE new PowerShell terminal.
+5. Navigate to the frontend UI workspace:
+   cd 'C:\Users\natas\.gemini\antigravity\scratch\LlamaImageSorter\frontend'
+6. Start the Frontend App (Node/React):
+   npm run dev 
+7. Open your browser and go to the link output in the terminal (usually http://localhost:5173).
+
+
+HOW TO STOP THE NEXUS ENGINE:
+
+1. Go to your terminal running `python app.py` and press `CTRL + C` on your keyboard.
+2. Go to your terminal running `npm run dev` and press `CTRL + C`.
+3. If background tasks freeze, you can forcibly kill all engines by running:
+   taskkill /IM python.exe /F
+   taskkill /IM node.exe /F 
