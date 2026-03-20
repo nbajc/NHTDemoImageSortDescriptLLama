@@ -1,12 +1,32 @@
 import os
 import threading
 import shutil
-from flask import Flask, request, jsonify
+import sqlite3
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from agents import DescriberAgent, SorterAgent
 
 app = Flask(__name__)
 CORS(app)
+
+def init_db():
+    conn = sqlite3.connect('nexus_catalog.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT,
+            original_path TEXT,
+            new_path TEXT,
+            category TEXT,
+            description TEXT,
+            project_tag TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # Global state to keep track of sorting progress
 job_state = {
@@ -20,7 +40,7 @@ job_state = {
     "error": None
 }
 
-def sort_images_worker(source_dir, target_dir, categories, vision_model, text_model, extensions, dry_run):
+def sort_images_worker(source_dir, target_dir, categories, vision_model, text_model, extensions, dry_run, project_tag):
     global job_state
     
     try:
@@ -71,6 +91,9 @@ def sort_images_worker(source_dir, target_dir, categories, vision_model, text_mo
                         job_state["processed"] += 1
                         continue
                         
+                    if project_tag:
+                        description += f"\n\n#{project_tag.strip()}"
+                        
                     job_state["description"] = description
                     
                     # 2. Sort Image
@@ -85,7 +108,8 @@ def sort_images_worker(source_dir, target_dir, categories, vision_model, text_mo
                     job_state["category"] = category
                     
                     # 3. Move Image
-                    category_dir = os.path.join(target_dir, category)
+                    project_dir = os.path.join(target_dir, project_tag) if project_tag else target_dir
+                    category_dir = os.path.join(project_dir, category)
                     target_path = os.path.join(category_dir, file)
                     
                     moved = False
@@ -106,14 +130,31 @@ def sort_images_worker(source_dir, target_dir, categories, vision_model, text_mo
                             desc_path = os.path.splitext(target_path)[0] + ".txt"
                             with open(desc_path, "w", encoding="utf-8") as f:
                                 f.write(description)
-                                
                             moved = True
                         except Exception as e:
-                            print(f"Failed to move {full_path}: {e}")
+                            print(f"Error copying {file}: {e}")
                     else:
                         moved = True
                     
                     if moved:
+                        if not dry_run:
+                            try:
+                                conn = sqlite3.connect('nexus_catalog.db')
+                                c = conn.cursor()
+                                c.execute("SELECT id FROM images WHERE original_path=?", (full_path,))
+                                row = c.fetchone()
+                                if row:
+                                    c.execute("""UPDATE images SET new_path=?, category=?, description=?, project_tag=? WHERE id=?""",
+                                              (target_path, category, description, project_tag, row[0]))
+                                else:
+                                    c.execute("""INSERT INTO images (file_name, original_path, new_path, category, description, project_tag) 
+                                                 VALUES (?, ?, ?, ?, ?, ?)""", 
+                                              (file, full_path, target_path, category, description, project_tag))
+                                conn.commit()
+                                conn.close()
+                            except Exception as e:
+                                print(f"DB Error: {e}")
+
                         job_state["results"].append({
                             "file": file,
                             "original_path": full_path,
@@ -152,6 +193,7 @@ def start_sorting():
     text_model = data.get("text_model", "llama3")
     extensions = data.get("extensions", ["jpg", "jpeg", "png", "webp"])
     dry_run = data.get("dry_run", False)
+    project_tag = data.get("project_tag", "")
     
     if not source_dir or not target_dir or not categories:
         return jsonify({"error": "Missing required fields: source, target, categories"}), 400
@@ -170,7 +212,7 @@ def start_sorting():
     # Start thread
     thread = threading.Thread(
         target=sort_images_worker,
-        args=(source_dir, target_dir, categories, vision_model, text_model, extensions, dry_run)
+        args=(source_dir, target_dir, categories, vision_model, text_model, extensions, dry_run, project_tag)
     )
     thread.daemon = True
     thread.start()
@@ -182,6 +224,145 @@ def get_results():
     if job_state["status"] != "completed":
         return jsonify({"error": "No completed job results available yet."}), 400
     return jsonify({"results": job_state["results"]})
+
+@app.route("/api/search", methods=["GET"])
+def search_db():
+    query = request.args.get("q", "")
+    try:
+        conn = sqlite3.connect('nexus_catalog.db')
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        if query:
+            search_term = f"%{query}%"
+            c.execute("""
+                SELECT * FROM images 
+                WHERE file_name LIKE ? OR category LIKE ? OR description LIKE ? OR project_tag LIKE ?
+                ORDER BY id DESC
+            """, (search_term, search_term, search_term, search_term))
+        else:
+            c.execute("SELECT * FROM images ORDER BY id DESC LIMIT 100")
+            
+        rows = c.fetchall()
+        results = []
+        for r in rows:
+            results.append({
+                "id": r["id"],
+                "file": r["file_name"],
+                "original_path": r["original_path"],
+                "new_path": r["new_path"],
+                "category": r["category"],
+                "description": r["description"],
+                "project_tag": r["project_tag"]
+            })
+        conn.close()
+        return jsonify({"results": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/image", methods=["GET"])
+def get_image():
+    image_path = request.args.get("path")
+    if not image_path or not os.path.exists(image_path):
+        return jsonify({"error": "Image not found"}), 404
+    return send_file(image_path)
+
+@app.route("/api/update_item", methods=["POST"])
+def update_item():
+    data = request.json
+    file_path = data.get("path")
+    new_description = data.get("description")
+    
+    if not file_path or not new_description:
+        return jsonify({"error": "Missing path or description"}), 400
+        
+    try:
+        desc_path = os.path.splitext(file_path)[0] + ".txt"
+        with open(desc_path, "w", encoding="utf-8") as f:
+            f.write(new_description)
+            
+        import re
+        tags = re.findall(r'#([^\s#]+)', new_description)
+        conn = sqlite3.connect('nexus_catalog.db')
+        c = conn.cursor()
+        
+        c.execute("SELECT project_tag FROM images WHERE new_path=? OR original_path=? OR file_name=?", (file_path, file_path, file_path))
+        row = c.fetchone()
+        
+        return_tags = None
+        if row:
+            existing_tags = set([t.strip() for t in str(row[0] or "").split(",") if t.strip()])
+            new_tags = set(tags)
+            merged_tags = existing_tags.union(new_tags)
+            if merged_tags:
+                tag_str = ", ".join(sorted(merged_tags))
+                c.execute("UPDATE images SET description=?, project_tag=? WHERE new_path=? OR original_path=? OR file_name=?", (new_description, tag_str, file_path, file_path, file_path))
+                return_tags = tag_str
+            else:
+                c.execute("UPDATE images SET description=? WHERE new_path=? OR original_path=? OR file_name=?", (new_description, file_path, file_path, file_path))
+        else:
+            if tags:
+                tag_str = ", ".join(tags)
+                c.execute("UPDATE images SET description=?, project_tag=? WHERE new_path=? OR original_path=? OR file_name=?", (new_description, tag_str, file_path, file_path, file_path))
+                return_tags = tag_str
+            else:
+                c.execute("UPDATE images SET description=? WHERE new_path=? OR original_path=? OR file_name=?", (new_description, file_path, file_path, file_path))
+            
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"message": "Description updated", "project_tag": return_tags})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/delete_item", methods=["POST"])
+def delete_item():
+    data = request.json
+    file_path = data.get("path")
+    
+    if not file_path:
+        return jsonify({"error": "Missing path"}), 400
+        
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            
+        desc_path = os.path.splitext(file_path)[0] + ".txt"
+        if os.path.exists(desc_path):
+            os.remove(desc_path)
+            
+        conn = sqlite3.connect('nexus_catalog.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM images WHERE new_path=?", (file_path,))
+        conn.commit()
+        conn.close()
+            
+        return jsonify({"message": "File and description deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/delete_folder", methods=["POST"])
+def delete_folder():
+    data = request.json
+    folder_path = data.get("path")
+    
+    if not folder_path:
+        return jsonify({"error": "Missing path"}), 400
+        
+    try:
+        if os.path.exists(folder_path) and os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+            
+            like_path = os.path.join(folder_path, "") + "%"
+            conn = sqlite3.connect('nexus_catalog.db')
+            c = conn.cursor()
+            c.execute("DELETE FROM images WHERE new_path LIKE ?", (like_path,))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({"message": "Folder deleted"})
+        return jsonify({"error": "Directory not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
