@@ -2,6 +2,7 @@ import os
 import threading
 import shutil
 import sqlite3
+import hashlib
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from agents import DescriberAgent, SorterAgent
@@ -361,6 +362,58 @@ def delete_folder():
             
             return jsonify({"message": "Folder deleted"})
         return jsonify({"error": "Directory not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/remove_doubles", methods=["POST"])
+def remove_doubles():
+    try:
+        conn = sqlite3.connect('nexus_catalog.db')
+        c = conn.cursor()
+        c.execute("SELECT id, new_path FROM images")
+        rows = c.fetchall()
+        
+        seen_hashes = {}
+        removed_count = 0
+        
+        for row in rows:
+            img_id = row[0]
+            new_path = row[1]
+            
+            if not new_path or not os.path.exists(new_path):
+                continue
+                
+            hasher = hashlib.md5()
+            with open(new_path, 'rb') as f:
+                hasher.update(f.read())
+            file_hash = hasher.hexdigest()
+            
+            if file_hash in seen_hashes:
+                preserved_path = seen_hashes[file_hash]
+                
+                # Only delete the physical file if it's a completely different copy on the disk
+                if new_path != preserved_path:
+                    try:
+                        os.remove(new_path)
+                    except Exception as e:
+                        print(f"Failed to delete duplicate image {new_path}: {e}")
+                        
+                    desc_path = os.path.splitext(new_path)[0] + ".txt"
+                    if os.path.exists(desc_path):
+                        try:
+                            os.remove(desc_path)
+                        except Exception as e:
+                            print(f"Failed to delete description for {desc_path}: {e}")
+                
+                c.execute("DELETE FROM images WHERE id=?", (img_id,))
+                removed_count += 1
+            else:
+                seen_hashes[file_hash] = new_path
+                
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"message": f"Successfully cleared {removed_count} exact duplicate images from your catalog!"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -12,6 +12,7 @@ An advanced, entirely local AI-powered multi-agent image sorting and cataloging 
 - **SQLite Catalog Indexing**: Every parsed detail—including descriptions, file paths, origin schemas, categories, and custom tags—is persistently saved into an internal `nexus_catalog.db` SQLite database.
 - **Real-time Live Desktop Search**: Immediately search across thousands of images through the top dashboard pane. The UI separates visually into a transient "Active Search Results" panel that hovers independently above your permanent full catalogue.
 - **Persistent Category Tabs**: Custom categories inputted via the dashboard configuration are persistently saved to `localStorage` and automatically converted into rapid-access UI Filter Tabs once images begin indexing.
+- **Storage Optimization**: Includes a powerful "Remove Exact Doubles" diagnostic tool. It parses your indexed target folders, computes MD5 cryptographic hashes for every image, and safely purges true binary exact duplicates while mathematically guaranteeing one physical copy is permanently preserved.
 
 ## 🏗️ Architecture Stack
 

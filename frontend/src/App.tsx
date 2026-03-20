@@ -46,6 +46,7 @@ function App() {
   // Modal State
   const [modalImage, setModalImage] = useState<any>(null);
   const [editDesc, setEditDesc] = useState('');
+  const [isRemovingDoubles, setIsRemovingDoubles] = useState(false);
   
   // Toast State
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -162,6 +163,27 @@ function App() {
       else alert("Error deleting folder.");
     } catch {
       alert("Failed to connect to API");
+    }
+  };
+
+  const handleRemoveDoubles = async () => {
+    if (!confirm("This will permanently scan and delete all physically identical images from your sorted target folders. Only one exact copy will be preserved. Continue?")) return;
+    try {
+      setIsRemovingDoubles(true);
+      const res = await fetch('http://127.0.0.1:5000/api/remove_doubles', {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message);
+        fetchCatalog(); 
+      } else {
+        alert("Error: " + data.error);
+      }
+    } catch {
+      alert("Failed to connect to API");
+    } finally {
+      setIsRemovingDoubles(false);
     }
   };
 
@@ -410,6 +432,16 @@ function App() {
               onClick={handleDeleteFolder} 
               className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 py-2 rounded font-bold text-sm transition-all flex items-center justify-center gap-2">
               <Trash2 className="w-4 h-4" /> Delete Category / Folder
+            </button>
+
+            <h3 className="text-sm font-bold text-red-400 mb-3 flex items-center gap-2 mt-6 pt-4 border-t border-red-500/20">
+               Clean Storage
+            </h3>
+            <button 
+              onClick={handleRemoveDoubles} 
+              disabled={isRemovingDoubles}
+              className="w-full bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 text-red-400 border border-red-500/20 py-2 rounded font-bold text-sm transition-all flex items-center justify-center gap-2">
+              {isRemovingDoubles ? <Loader2 className="w-4 h-4 animate-spin"/> : <Trash2 className="w-4 h-4" />} {isRemovingDoubles ? "Scanning..." : "Remove Exact Doubles"}
             </button>
           </div>
         </section>
